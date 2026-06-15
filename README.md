@@ -18,3 +18,4 @@ Uses low-level Win32 hardware input injection for extremely precise mouse record
 ```
 build.bat
 ```
+That's all!
