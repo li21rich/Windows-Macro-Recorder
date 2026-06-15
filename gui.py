@@ -53,7 +53,7 @@ class MacroGUI:
         self._build_ui()
         self._refresh_list()
 
-    # ── UI ────────────────────────────────────────────────────────────────────
+
     def _build_ui(self):
         PAD = 4
         BTN_FONT = ("TkDefaultFont", 8)
@@ -124,8 +124,7 @@ class MacroGUI:
 
     def _toggle_on_top(self):
         self.root.wm_attributes("-topmost", self._on_top_var.get())
-
-    # ── List ──────────────────────────────────────────────────────────────────
+        
     def _refresh_list(self):
         for row in self.tree.get_children():
             self.tree.delete(row)
@@ -138,8 +137,7 @@ class MacroGUI:
     def _selected(self) -> str | None:
         sel = self.tree.selection()
         return sel[0] if sel else None
-
-    # ── Actions ───────────────────────────────────────────────────────────────
+    
     def _toggle_record(self):
         if not self.engine.is_recording:
             self.engine.start_recording()
@@ -213,8 +211,7 @@ class MacroGUI:
         except OSError as e:
             messagebox.showerror("Error", str(e))
         self._refresh_list()
-
-    # ── Engine event callback (called from pynput thread) ─────────────────────
+        
     def _on_engine_event(self, event: str):
         self.root.after(0, self._apply_event, event)
 

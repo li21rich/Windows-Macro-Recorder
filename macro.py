@@ -1,18 +1,14 @@
 import os
+import sys
 import struct
 import threading
 import time
 import ctypes
 import json
 from ctypes import wintypes
-
 import psutil
 from pynput import keyboard, mouse
 
-
-# =============================================================================
-#  Process / timer setup
-# =============================================================================
 psutil.Process().nice(psutil.HIGH_PRIORITY_CLASS)
 ctypes.windll.winmm.timeBeginPeriod(1)
 
@@ -21,15 +17,10 @@ ctypes.windll.kernel32.QueryPerformanceFrequency(ctypes.byref(_qpc_freq))
 _QPC_FREQ: float = float(_qpc_freq.value)
 
 def qpc_time() -> float:
-    """High-resolution timestamp in seconds."""
     val = ctypes.c_longlong()
     ctypes.windll.kernel32.QueryPerformanceCounter(ctypes.byref(val))
     return val.value / _QPC_FREQ
 
-
-# =============================================================================
-#  Win32 structures — input injection
-# =============================================================================
 class MOUSEINPUT(ctypes.Structure):
     _fields_ = [
         ("dx",          ctypes.c_long),
@@ -49,11 +40,6 @@ INPUT_MOUSE        = 0
 MOUSEEVENTF_MOVE   = 0x0001
 MOUSEEVENTF_WHEEL  = 0x0800
 MOUSEEVENTF_HWHEEL = 0x1000
-
-
-# =============================================================================
-#  Win32 structures — raw input
-# =============================================================================
 WM_INPUT        = 0x00FF
 RID_INPUT       = 0x10000003
 RIDEV_INPUTSINK = 0x00000100
@@ -117,21 +103,13 @@ u32.DefWindowProcW.argtypes  = [wintypes.HWND, wintypes.UINT,
                                 wintypes.WPARAM, wintypes.LPARAM]
 u32.DefWindowProcW.restype   = LRESULT
 
-
-# =============================================================================
-#  Config
-# =============================================================================
-SAVE_DIR     = "macros"
+LOCAL_APPDATA = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+SAVE_DIR     = os.path.join(LOCAL_APPDATA, "WindowsMacroRecorder", "macros")
 MAPPING_FILE = os.path.join(SAVE_DIR, "hotkey_map.json")
-RECORD_KEY   = 'ctrl i'   # Swapped to Ctrl+I
-TEST_KEY     = 'ctrl b'   # Global key combo to test unsaved macro
+RECORD_KEY   = 'ctrl i'   
+TEST_KEY     = 'ctrl b'   
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-
-# =============================================================================
-#  Binary file format
-#  struct '<d B i i 64s'>  — 81 bytes per event
-# =============================================================================
 _FMT   = '<dBii64s'
 _CHUNK = struct.calcsize(_FMT)
 
@@ -146,37 +124,24 @@ TYPE_PRESS   = 2
 TYPE_RELEASE = 3
 TYPE_SCROLL  = 4
 
-
-# =============================================================================
-#  MacroEngine — encapsulates all state and logic
-# =============================================================================
 class MacroEngine:
     def __init__(self):
         self.is_recording    = False
         self._current_macro: list = []
         self._rec_start_qpc: float = 0.0
-
         self._stop_event      = threading.Event()
         self._playback_lock   = threading.Lock()
         self._playback_thread = None
-
-        # State tracking for clean hotkey evaluation
         self._ctrl_pressed = False
         parts = [p.strip().lower() for p in RECORD_KEY.split()]
         self._req_ctrl = 'ctrl' in parts
         self._req_char = next((p for p in parts if p != 'ctrl'), None)
-        
         self._req_test_char = TEST_KEY.split()[-1].lower()
-
-        # hotkey_map: { key_char: filepath }
         self.hotkey_map: dict[str, str] = {}
         self._load_hotkey_map()
-
         self.on_state_change = None
-
         self._wnd_proc_holder = None
         threading.Thread(target=self._raw_input_loop, daemon=True).start()
-
         self._kb_listener = keyboard.Listener(
             on_press=self._on_press, on_release=self._on_release)
         self._ms_listener = mouse.Listener(
@@ -184,7 +149,6 @@ class MacroEngine:
         self._kb_listener.start()
         self._ms_listener.start()
 
-    # ── Hotkey map persistence ────────────────────────────────────────────────
     def _load_hotkey_map(self):
         if os.path.exists(MAPPING_FILE):
             try:
@@ -217,7 +181,6 @@ class MacroEngine:
                 return k
         return ""
 
-    # ── Recording ─────────────────────────────────────────────────────────────
     def start_recording(self):
         if self.is_playing():
             return
@@ -240,7 +203,6 @@ class MacroEngine:
     def has_unsaved(self) -> bool:
         return bool(self._current_macro)
 
-    # ── Playback ──────────────────────────────────────────────────────────────
     def is_playing(self) -> bool:
         with self._playback_lock:
             return (self._playback_thread is not None
@@ -257,7 +219,6 @@ class MacroEngine:
         t.start()
 
     def play_temporary(self):
-        """Plays the current macro sitting in RAM buffer."""
         if self.is_playing() or self.is_recording or not self._current_macro:
             return
         self._stop_event.clear()
@@ -273,19 +234,16 @@ class MacroEngine:
     def _play_worker(self, data: list):
         _set_thread_critical()
         self._notify('play_start')
-
         kb          = keyboard.Controller()
         ms          = mouse.Controller()
         active_keys: set = set()
         start_play  = time.time()
-
         try:
             for event in data:
                 if self._stop_event.is_set():
                     break
                 if not self._precise_wait(start_play + event['time']):
                     break
-
                 etype = event['type']
                 if etype == 'move':
                     hardware_move_relative(event['dx'], event['dy'])
@@ -332,7 +290,6 @@ class MacroEngine:
             if remaining > 0.1:
                 time.sleep(remaining - 0.05)
 
-    # ── File helpers ──────────────────────────────────────────────────────────
     def _get_next_filename(self) -> str:
         i = 0
         while os.path.exists(os.path.join(SAVE_DIR, f"macro_{i}.bin")):
@@ -345,9 +302,9 @@ class MacroEngine:
 
     def delete_macro(self, filepath: str):
         self.clear_hotkey(filepath)
-        os.remove(filepath)
+        if os.path.exists(filepath):
+            os.remove(filepath)
 
-    # ── Input listeners ───────────────────────────────────────────────────────
     def _on_scroll(self, x, y, dx, dy):
         if self.is_recording:
             self._current_macro.append({
@@ -369,26 +326,20 @@ class MacroEngine:
     def _on_press(self, key):
         if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
             self._ctrl_pressed = True
-
-        # Ctrl+C — always quit
         try:
             if key.vk == 3 or (self._ctrl_pressed and getattr(key, 'char', None) == '\x03'):
                 os._exit(0)
         except AttributeError:
             pass
-
         char = getattr(key, 'char', None)
         if char and ord(char) < 32:
             try:
                 char = chr(ord(char) + 96)
             except Exception:
                 pass
-
         key_name = char or getattr(key, 'name', None)
         if key_name:
             key_name = key_name.lower()
-
-        # Check if remapped combo matches
         if self._ctrl_pressed:
             if key_name == self._req_char:
                 if not self.is_recording:
@@ -402,8 +353,6 @@ class MacroEngine:
                 else:
                     self.play_temporary()
                 return
-
-        # Mapped playback hotkeys
         if char and char in self.hotkey_map and not self.is_recording:
             fp = self.hotkey_map[char]
             if os.path.exists(fp):
@@ -412,8 +361,6 @@ class MacroEngine:
                 else:
                     self.play(fp)
             return
-
-        # Record event
         if self.is_recording:
             self._current_macro.append({
                 'type': 'press',
@@ -428,17 +375,13 @@ class MacroEngine:
                 char = chr(ord(char) + 96)
             except Exception:
                 pass
-
         key_name = char or getattr(key, 'name', None)
         if key_name:
             key_name = key_name.lower()
-
         is_record_hotkey = (self._req_ctrl == self._ctrl_pressed) and (key_name == self._req_char)
         is_test_hotkey = self._ctrl_pressed and (key_name == self._req_test_char)
-
         if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
             self._ctrl_pressed = False
-
         if self.is_recording:
             if is_record_hotkey or is_test_hotkey:
                 return
@@ -450,7 +393,6 @@ class MacroEngine:
                 'time': qpc_time() - self._rec_start_qpc,
             })
 
-    # ── Raw input hidden window ───────────────────────────────────────────────
     def _raw_input_loop(self):
         hwnd = self._create_hidden_window()
         rid  = RAWINPUTDEVICE()
@@ -459,7 +401,6 @@ class MacroEngine:
         rid.dwFlags     = RIDEV_INPUTSINK
         rid.hwndTarget  = hwnd
         if not u32.RegisterRawInputDevices(ctypes.byref(rid), 1, ctypes.sizeof(rid)):
-            print("CRITICAL: Failed to register raw input devices.")
             return
         msg = wintypes.MSG()
         while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
@@ -489,7 +430,6 @@ class MacroEngine:
                             'time': qpc_time() - self._rec_start_qpc,
                         })
             return u32.DefWindowProcW(hwnd, msg, wparam, lparam)
-
         self._wnd_proc_holder = WNDPROC(wnd_proc)
         cls_name = "MacroRawInputWindow"
         wcls = WNDCLASSW()
@@ -506,16 +446,11 @@ class MacroEngine:
         if self.on_state_change:
             self.on_state_change(event)
 
-
-# =============================================================================
-#  Module-level helpers
-# =============================================================================
 def hardware_move_relative(dx: int, dy: int) -> None:
     ii_ = INPUT._INPUT()
     ii_.mi = MOUSEINPUT(dx, dy, 0, MOUSEEVENTF_MOVE, 0, None)
     cmd = INPUT(INPUT_MOUSE, ii_)
     u32.SendInput(1, ctypes.pointer(cmd), ctypes.sizeof(cmd))
-
 
 def hardware_scroll(dx: int, dy: int) -> None:
     WHEEL_DELTA = 120
@@ -529,7 +464,6 @@ def hardware_scroll(dx: int, dy: int) -> None:
         ii_.mi = MOUSEINPUT(0, 0, dx * WHEEL_DELTA, MOUSEEVENTF_HWHEEL, 0, None)
         cmd = INPUT(INPUT_MOUSE, ii_)
         u32.SendInput(1, ctypes.pointer(cmd), ctypes.sizeof(cmd))
-
 
 def save_macro_binary(filename: str, macro_data: list) -> None:
     with open(filename, 'wb') as f:
@@ -550,9 +484,7 @@ def save_macro_binary(filename: str, macro_data: list) -> None:
                 t_id, d1, d2, kb = TYPE_SCROLL,  e['dx'],  e['dy'],  b''
             else:
                 continue
-            f.write(struct.pack(_FMT, e['time'], t_id, d1, d2,
-                                kb.ljust(64, b'\x00')))
-
+            f.write(struct.pack(_FMT, e['time'], t_id, d1, d2, kb.ljust(64, b'\x00')))
 
 def load_macro_binary(filename: str) -> list:
     data      = []
@@ -589,7 +521,6 @@ def load_macro_binary(filename: str) -> list:
                 print(f"WARNING: unknown type {type_id} at chunk {idx}")
     return data
 
-
 def clean_key(raw: str):
     s = raw.strip("'")
     if s.startswith("Key."):
@@ -608,14 +539,14 @@ def clean_key(raw: str):
         return keyboard.KeyCode.from_char(s)
     return None
 
-
 def list_macros() -> list[str]:
+    if not os.path.exists(SAVE_DIR):
+        return []
     return sorted([
         os.path.join(SAVE_DIR, f)
         for f in os.listdir(SAVE_DIR)
         if f.startswith("macro_") and f.endswith(".bin")
     ], key=os.path.getctime)
-
 
 def macro_duration(filepath: str) -> float:
     try:
@@ -623,7 +554,6 @@ def macro_duration(filepath: str) -> float:
         return data[-1]['time'] if data else 0.0
     except Exception:
         return 0.0
-
 
 def _set_thread_critical() -> None:
     ctypes.windll.kernel32.SetThreadPriority(
