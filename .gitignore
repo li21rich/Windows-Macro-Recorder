@@ -1,0 +1,8 @@
+macros/
+.venv/
+venv/
+build/
+dist/
+*.spec
+_pycache_/
+*.pyc
